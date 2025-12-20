@@ -3,15 +3,18 @@
  * Logs when follow-up should happen (scheduler integration for hackathon demo)
  */
 export async function scheduleFollowUp(previousStepOutput, context) {
-  const { verification, decision, eventData } = previousStepOutput;
+  const { verification, decision, eventData, execution } = previousStepOutput;
   
-  console.log(`📅 Scheduling follow-up for ${decision.action}...`);
+  // Get the actual action that was executed
+  const executedAction = execution?.action || decision.action;
+  
+  console.log(`📅 Scheduling follow-up for ${executedAction}...`);
   
   // Only schedule follow-up for certain actions
-  const needsFollowUp = ['auto-fix', 'monitor', 'escalate'].includes(decision.action);
+  const needsFollowUp = ['auto-fix', 'monitor', 'escalate'].includes(executedAction);
   
   if (!needsFollowUp) {
-    console.log(`ℹ️ No follow-up needed for ${decision.action}`);
+    console.log(`ℹ️ No follow-up needed for ${executedAction}`);
     
     return {
       ...previousStepOutput,
@@ -22,7 +25,7 @@ export async function scheduleFollowUp(previousStepOutput, context) {
   // Determine follow-up timing
   let delayMinutes;
   
-  switch (decision.action) {
+  switch (executedAction) {
     case 'auto-fix':
       delayMinutes = verification.verified ? 30 : 5; // Quick recheck if failed
       break;

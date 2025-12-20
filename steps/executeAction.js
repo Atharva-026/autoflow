@@ -3,15 +3,24 @@
  * This can run as a background job for long-running tasks
  */
 export async function executeAction(previousStepOutput, context) {
-  const { decision, eventData, classification } = previousStepOutput;
+  const { decision, eventData, classification, approvalResult } = previousStepOutput;
   
-  console.log(`⚙️ Executing action: ${decision.action}`);
+  // After approval, execute the ORIGINAL action (escalate)
+  let actionToExecute = decision.action;
+  
+  if (decision.action === 'require_approval') {
+    // Approval was given, execute the AI's original suggestion
+    actionToExecute = decision.aiSuggestion || 'escalate';
+    console.log(`✅ Approval granted - executing: ${actionToExecute}`);
+  }
+  
+  console.log(`⚙️ Executing action: ${actionToExecute}`);
   
   let result;
   
   try {
     // Execute action based on decision
-    switch (decision.action) {
+    switch (actionToExecute) {
       case 'ignore':
         result = await handleIgnore(eventData);
         break;
@@ -30,7 +39,7 @@ export async function executeAction(previousStepOutput, context) {
         break;
         
       default:
-        throw new Error(`Unknown action: ${decision.action}`);
+        throw new Error(`Unknown action: ${actionToExecute}`);
     }
     
     console.log(`✅ Action executed successfully: ${result.message}`);

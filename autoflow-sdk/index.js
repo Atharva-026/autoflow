@@ -1,15 +1,10 @@
 /**
- * AutoFlow SDK
+ * AutoFlow SDK (ES Module Version)
  * Plug this into ANY Node.js project to get autonomous error handling
- * 
- * Installation:
- * 1. Copy this file to your project
- * 2. Import it: const autoflow = require('./autoflow-sdk')
- * 3. Use it in error handlers
  */
 
-const https = require('https');
-const http = require('http');
+import https from 'https';
+import http from 'http';
 
 class AutoFlowClient {
   constructor(config = {}) {
@@ -136,7 +131,11 @@ class AutoFlowClient {
         res.on('data', chunk => body += chunk);
         res.on('end', () => {
           if (res.statusCode >= 200 && res.statusCode < 300) {
-            resolve(JSON.parse(body));
+            try {
+              resolve(JSON.parse(body));
+            } catch {
+              resolve({ success: true });
+            }
           } else {
             reject(new Error(`HTTP ${res.statusCode}: ${body}`));
           }
@@ -191,8 +190,5 @@ class AutoFlowClient {
   }
 }
 
-// Export for CommonJS
-module.exports = AutoFlowClient;
-
-// Export for ES modules
-module.exports.default = AutoFlowClient;
+// ES Module export
+export default AutoFlowClient;

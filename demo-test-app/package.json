@@ -1,16 +1,13 @@
 {
   "name": "demo-test-app",
   "version": "1.0.0",
+  "type": "module",
+  "description": "Demo app to test AutoFlow integration",
   "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
   "dependencies": {
-    "express": "^5.2.1"
+    "express": "^4.18.2"
   }
 }

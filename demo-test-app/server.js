@@ -2,12 +2,10 @@
  * DEMO TEST APP
  * Simple Express app that deliberately throws errors
  * Used to demonstrate AutoFlow integration
- * 
- * Run this to show judges how AutoFlow works with ANY project!
  */
 
-const express = require('express');
-const AutoFlowClient = require('../autoflow-sdk');
+import express from 'express';
+import AutoFlowClient from '../autoflow-sdk/index.js';
 
 // Initialize AutoFlow
 const autoflow = new AutoFlowClient({
@@ -115,7 +113,7 @@ app.get('/test/critical', async (req, res) => {
   
   await autoflow.reportError(error, {
     source: 'payment-gateway',
-    severity: 'critical',  // Force critical
+    severity: 'critical',
     affectedTransactions: 127,
     lastSuccessfulTransaction: '10 minutes ago',
     gatewayStatus: 'unreachable'
@@ -140,6 +138,7 @@ app.get('/test/storm', async (req, res) => {
       source: 'cache-service',
       attemptNumber: i + 1
     });
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
   
   res.json({
@@ -152,7 +151,6 @@ app.get('/test/storm', async (req, res) => {
 
 // Test route: Successful operation
 app.get('/test/success', async (req, res) => {
-  // Report successful operation (optional)
   await autoflow.reportEvent('info', 'User successfully completed checkout', 'low', {
     userId: 'demo-user-789',
     orderId: 'ORD-12345',
@@ -165,17 +163,15 @@ app.get('/test/success', async (req, res) => {
   });
 });
 
-// Test route: Unhandled error (global handler catches it)
+// Test route: Unhandled error
 app.get('/test/unhandled', (req, res) => {
-  // This will be caught by AutoFlow's global handler
   throw new Error('Unhandled exception in route handler');
 });
 
-// Simulate background job with error
+// Simulate background job with errors
 setInterval(async () => {
   try {
-    // Simulate random failures
-    if (Math.random() < 0.1) {  // 10% failure rate
+    if (Math.random() < 0.1) {
       throw new Error('Background cleanup job failed');
     }
   } catch (error) {
@@ -185,7 +181,7 @@ setInterval(async () => {
       severity: 'medium'
     });
   }
-}, 30000); // Every 30 seconds
+}, 30000);
 
 // Global error middleware
 app.use(autoflow.expressMiddleware());

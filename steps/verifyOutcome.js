@@ -5,32 +5,35 @@
 export async function verifyOutcome(previousStepOutput, context) {
   const { execution, eventData, decision } = previousStepOutput;
   
-  console.log(`🔍 Verifying outcome of ${execution.action}...`);
+  // Get the actual action that was executed
+  const executedAction = execution.action;
+  
+  console.log(`🔍 Verifying outcome of ${executedAction}...`);
   
   // Simulate verification check
   await new Promise(resolve => setTimeout(resolve, 1000));
   
   let verification;
   
-  if (execution.action === 'ignore') {
+  if (executedAction === 'ignore') {
     verification = {
       verified: true,
       status: 'no_action_needed',
       message: 'Event was correctly ignored'
     };
-  } else if (execution.action === 'escalate') {
+  } else if (executedAction === 'escalate') {
     verification = {
       verified: true,
       status: 'escalated',
       message: 'Event successfully escalated to operators'
     };
-  } else if (execution.action === 'monitor') {
+  } else if (executedAction === 'monitor') {
     verification = {
       verified: true,
       status: 'monitoring',
       message: 'Monitoring active, follow-up scheduled'
     };
-  } else if (execution.action === 'auto-fix') {
+  } else if (executedAction === 'auto-fix') {
     // For auto-fix, check if it actually worked
     const isResolved = execution.result.success;
     
