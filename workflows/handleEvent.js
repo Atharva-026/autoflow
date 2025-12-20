@@ -161,6 +161,7 @@ export default async function handleOperationalEvent(input, context) {
       return executeAction({
         ...policyDecision,
         decision: finalDecision,
+        classification: step2Result.classification, // Pass classification for emails
         approvalResult
       }, context);
     });

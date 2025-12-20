@@ -31,7 +31,7 @@ export async function executeAction(previousStepOutput, context) {
         break;
         
       case 'escalate':
-        result = await handleEscalate(eventData, decision.parameters);
+        result = await handleEscalate(eventData, actionToExecute, classification, decision.parameters);
         break;
         
       case 'monitor':
@@ -105,17 +105,28 @@ async function handleAutoFix(eventData, parameters) {
   }
 }
 
-async function handleEscalate(eventData, parameters) {
-  console.log(`🚨 Escalating event to: ${parameters.notifyChannels?.join(', ') || 'default channels'}`);
+async function handleEscalate(eventData, actionName, classification, parameters) {
+  console.log(`🚨 Escalating event to: ${parameters?.notifyChannels?.join(', ') || 'default channels'}`);
   
-  // Simulate notification (in real app, call Slack/Email APIs)
+  // Send real email!
+  const decision = { action: actionName, parameters };
+  const emailResult = await sendEscalationEmail(eventData, classification, decision);
+  
+  if (emailResult.success) {
+    console.log(`📧 Email sent to: ${emailResult.recipient}`);
+  } else {
+    console.log(`⚠️ Email failed: ${emailResult.reason || emailResult.error}`);
+  }
+  
+  // Simulate Slack/other notifications
   await new Promise(resolve => setTimeout(resolve, 1000));
   
   return {
     success: true,
-    message: `Escalated to ${parameters.notifyChannels?.length || 1} channels`,
+    message: `Escalated to ${parameters?.notifyChannels?.length || 1} channels${emailResult.success ? ' (email sent)' : ''}`,
     action: 'escalate',
-    channels: parameters.notifyChannels || ['default']
+    channels: parameters?.notifyChannels || ['email'],
+    emailSent: emailResult.success
   };
 }
 

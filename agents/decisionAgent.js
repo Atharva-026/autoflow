@@ -5,7 +5,7 @@ dotenv.config();
 
 // Configuration - choose AI provider
 const USE_OPENROUTER = process.env.USE_OPENROUTER === 'true';
-const MOCK_MODE = true; // Set to true if you want mock data
+const MOCK_MODE = false; // Set to true if you want mock data
 
 // Initialize clients
 const anthropic = new Anthropic({
