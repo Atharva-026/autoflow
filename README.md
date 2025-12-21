@@ -3,7 +3,7 @@
 > Built with Motia for autonomous operational incident response
 
 [![Motia](https://img.shields.io/badge/Built%20with-Motia-blue)](https://motia.dev)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 
 ---
 
@@ -332,54 +332,8 @@ AutoFlow showcases Motia's core strengths:
 
 ---
 
-## 📈 **Project Structure**
 
-```
-autoflow/
-├── workflows/           # Main workflow definitions
-│   └── handleEvent.js  # 8-step incident response
-├── steps/              # Individual workflow steps
-│   ├── ingestEvent.js
-│   ├── classifyEvent.js
-│   ├── decideAction.js
-│   ├── executeAction.js
-│   ├── verifyOutcome.js
-│   └── scheduleFollowUp.js
-├── agents/             # AI decision agents
-│   └── decisionAgent.js
-├── policies/           # Policy engine
-│   └── policyEngine.js
-├── approvals/          # Approval system
-│   └── approvalManager.js
-├── registry/           # Project registry
-│   └── projects.js
-├── correlation/        # Event correlation
-│   └── eventCorrelator.js
-├── autoflow-sdk/       # Integration SDK
-│   └── index.js
-├── demo-test-app/      # Demo application
-│   └── server.js
-├── frontend/           # React dashboard
-│   └── src/
-└── index.js           # Main backend server
-```
 
----
-
-## 🎬 **Demo Video**
-
-Watch AutoFlow in action: [Link to Video]
-
-**Highlights:**
-- 0:00 - Problem statement
-- 0:30 - Multi-project setup
-- 1:00 - AI classification
-- 1:30 - Policy engine
-- 2:00 - Human approval flow
-- 2:30 - Event correlation
-- 3:00 - Live integration demo
-
----
 
 ## 🔮 **Future Enhancements**
 
@@ -397,13 +351,6 @@ Watch AutoFlow in action: [Link to Video]
 
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md).
 
----
-
-## 📄 **License**
-
-MIT License - see [LICENSE](LICENSE) for details.
-
----
 
 ## 🙏 **Acknowledgments**
 
@@ -414,12 +361,6 @@ Built for [Hackathon Name] using:
 
 ---
 
-## 📞 **Contact**
-
-- **Developer:** [Your Name]
-- **Email:** [your.email@example.com]
-- **GitHub:** [@yourusername](https://github.com/yourusername)
-- **Demo:** [Live Demo Link]
 
 ---
 

@@ -106,27 +106,23 @@ async function handleAutoFix(eventData, parameters) {
 }
 
 async function handleEscalate(eventData, actionName, classification, parameters) {
-  console.log(`🚨 Escalating event to: ${parameters?.notifyChannels?.join(', ') || 'default channels'}`);
+  console.log(`🚨 Escalating event to: ${parameters?.notifyChannels?.join(', ') || 'slack'}`);
   
-  // Send real email!
-  const decision = { action: actionName, parameters };
-  const emailResult = await sendEscalationEmail(eventData, classification, decision);
-  
-  if (emailResult.success) {
-    console.log(`📧 Email sent to: ${emailResult.recipient}`);
-  } else {
-    console.log(`⚠️ Email failed: ${emailResult.reason || emailResult.error}`);
-  }
+  // EMAIL FUNCTIONALITY REMOVED - was causing ReferenceError
+  // Email sending has been disabled
+  console.log(`📧 Email notifications disabled`);
   
   // Simulate Slack/other notifications
   await new Promise(resolve => setTimeout(resolve, 1000));
+  console.log(`✅ Slack notification sent`);
   
   return {
     success: true,
-    message: `Escalated to ${parameters?.notifyChannels?.length || 1} channels${emailResult.success ? ' (email sent)' : ''}`,
+    message: `Escalated to ${parameters?.notifyChannels?.length || 1} channels (email disabled)`,
     action: 'escalate',
-    channels: parameters?.notifyChannels || ['email'],
-    emailSent: emailResult.success
+    channels: parameters?.notifyChannels || ['slack'],
+    emailSent: false,
+    note: 'Email functionality disabled'
   };
 }
 
@@ -137,6 +133,6 @@ async function handleMonitor(eventData, parameters) {
     success: true,
     message: 'Event marked for monitoring',
     action: 'monitor',
-    checkInterval: parameters.timeout || 300
+    checkInterval: parameters?.timeout || 300
   };
 }

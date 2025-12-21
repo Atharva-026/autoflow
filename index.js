@@ -27,12 +27,26 @@ const sseClients = []; // Connected SSE clients
 // Helper to broadcast logs to all connected clients
 function broadcastLog(log) {
   const data = `data: ${JSON.stringify(log)}\n\n`;
-  sseClients.forEach(client => {
+  
+  // Clean up disconnected clients while broadcasting
+  const disconnectedClients = [];
+  
+  sseClients.forEach((client, index) => {
     try {
+      if (!client.headersSent || client.destroyed) {
+        disconnectedClients.push(index);
+        return;
+      }
       client.write(data);
     } catch (error) {
-      // Client disconnected, will be removed later
+      // Mark for removal
+      disconnectedClients.push(index);
     }
+  });
+  
+  // Remove disconnected clients (in reverse to maintain indices)
+  disconnectedClients.reverse().forEach(index => {
+    sseClients.splice(index, 1);
   });
 }
 
@@ -50,6 +64,11 @@ const server = http.createServer(async (req, res) => {
   
   // SSE endpoint for real-time logs
   if (req.url === '/api/logs/stream' && req.method === 'GET') {
+    // Check if headers already sent
+    if (res.headersSent) {
+      return;
+    }
+    
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -58,9 +77,23 @@ const server = http.createServer(async (req, res) => {
     });
     
     sseClients.push(res);
-    res.write(`data: ${JSON.stringify({ type: 'connected', message: 'Connected to workflow logs' })}\n\n`);
+    
+    // Safely write initial message
+    try {
+      res.write(`data: ${JSON.stringify({ type: 'connected', message: 'Connected to workflow logs' })}\n\n`);
+    } catch (error) {
+      console.error('Error sending initial SSE message:', error.message);
+    }
     
     req.on('close', () => {
+      const index = sseClients.indexOf(res);
+      if (index !== -1) {
+        sseClients.splice(index, 1);
+      }
+    });
+    
+    // Handle client errors
+    res.on('error', (error) => {
       const index = sseClients.indexOf(res);
       if (index !== -1) {
         sseClients.splice(index, 1);
@@ -379,9 +412,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   
-  // 404
-  res.writeHead(404, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Not found' }));
+  // 404 - only if headers not sent
+  if (!res.headersSent) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not found' }));
+  }
 });
 
 const PORT = process.env.PORT || 3000;
