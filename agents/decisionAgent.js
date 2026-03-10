@@ -1,203 +1,185 @@
-import Anthropic from '@anthropic-ai/sdk';
 import dotenv from 'dotenv';
-
 dotenv.config();
 
-// Configuration - choose AI provider
-const USE_OPENROUTER = process.env.USE_OPENROUTER === 'true';
-const MOCK_MODE = false; // Set to true if you want mock data
+// ─── Provider Config ───────────────────────────────────────────────────────
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
-// Initialize clients
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY
-});
+// Groq free models (fast & capable)
+// Options: llama-3.3-70b-versatile | llama3-8b-8192 | mixtral-8x7b-32768 | gemma2-9b-it
+const GROQ_MODEL = 'llama-3.3-70b-versatile';
 
-/**
- * Call AI API (OpenRouter or Anthropic)
- */
+// ─── Core AI Caller ────────────────────────────────────────────────────────
 async function callAI(prompt) {
-  if (USE_OPENROUTER) {
-    // Use OpenRouter with FREE models
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+
+  // PRIMARY: Groq (free, very fast)
+  if (GROQ_API_KEY) {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'http://localhost:3000',
-        'X-Title': 'AutoFlow Hackathon'
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'anthropic/claude-3-haiku', // FREE Claude model!
-        // Alternative free models:
-        // model: 'meta-llama/llama-3.1-8b-instruct:free',
-        // model: 'google/gemini-flash-1.5',
-        messages: [
-          { role: 'user', content: prompt }
-        ],
-        temperature: 0.7,
-        max_tokens: 1000
+        model: GROQ_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.3,      // Lower = more consistent JSON output
+        max_tokens: 500
       })
     });
 
     if (!response.ok) {
-      throw new Error(`OpenRouter API error: ${response.statusText}`);
+      const err = await response.text();
+      throw new Error(`Groq API error: ${response.status} - ${err}`);
     }
 
     const data = await response.json();
     return data.choices[0].message.content;
-    
-  } else {
-    // Use Anthropic
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1000,
-      messages: [{
-        role: 'user',
-        content: prompt
-      }]
+  }
+
+  // FALLBACK: Anthropic (if no Groq key but has Anthropic key)
+  if (ANTHROPIC_API_KEY) {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 500,
+        messages: [{ role: 'user', content: prompt }]
+      })
     });
-    
-    return response.content[0].text;
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`Anthropic API error: ${response.status} - ${err}`);
+    }
+
+    const data = await response.json();
+    return data.content[0].text;
   }
+
+  throw new Error('No AI provider configured. Set GROQ_API_KEY or ANTHROPIC_API_KEY in .env');
 }
 
-/**
- * AI Agent that classifies events
- */
+// ─── JSON Extractor ────────────────────────────────────────────────────────
+function extractJSON(text) {
+  // Try direct parse first
+  try { return JSON.parse(text.trim()); } catch {}
+
+  // Try extracting from markdown code blocks
+  const codeBlock = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (codeBlock) {
+    try { return JSON.parse(codeBlock[1].trim()); } catch {}
+  }
+
+  // Try extracting raw JSON object
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try { return JSON.parse(jsonMatch[0]); } catch {}
+  }
+
+  throw new Error(`Could not extract JSON from AI response: ${text.slice(0, 200)}`);
+}
+
+// ─── Event Classifier ──────────────────────────────────────────────────────
 export async function classifyEvent(eventData) {
-  // MOCK MODE for offline demo
-  if (MOCK_MODE) {
-    console.log('🤖 AI Classification (Mock Mode)');
-    
-    let severity = 'medium';
-    let category = eventData.type || 'info';
-    
-    if (eventData.severity === 'critical' || eventData.message?.includes('critical')) {
-      severity = 'critical';
-    } else if (eventData.severity === 'high' || eventData.type === 'error' || eventData.message?.includes('timeout')) {
-      severity = 'high';
-    } else if (eventData.severity === 'low' || eventData.type === 'info') {
-      severity = 'low';
-    }
-    
-    return {
-      severity,
-      category,
-      confidence: 0.92,
-      reasoning: `${eventData.type} event from ${eventData.source} indicates ${severity} priority operational issue`
-    };
-  }
-  
-  // REAL AI MODE
-  const prompt = `You are an operational event classifier. Analyze this event and return ONLY a JSON object.
+  const provider = GROQ_API_KEY ? 'Groq' : ANTHROPIC_API_KEY ? 'Anthropic' : 'None';
+  console.log(`🤖 Classifying event via ${provider} (${GROQ_MODEL})...`);
 
-Event Details:
-- Type: ${eventData.type}
-- Source: ${eventData.source}
-- Message: ${eventData.message || 'N/A'}
-- Metadata: ${JSON.stringify(eventData.metadata || {})}
-
-Respond with this exact JSON structure (nothing else):
-{
-  "severity": "low|medium|high|critical",
-  "category": "error|alert|info|warning",
-  "confidence": 0.0-1.0,
-  "reasoning": "brief explanation"
-}`;
-
-  try {
-    console.log(`🤖 Calling ${USE_OPENROUTER ? 'OpenRouter' : 'Anthropic'} API...`);
-    const text = await callAI(prompt);
-    
-    // Extract JSON from response
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('No JSON found in AI response');
-    }
-    
-    const classification = JSON.parse(jsonMatch[0]);
-    console.log('✅ AI Classification:', classification);
-    
-    return classification;
-    
-  } catch (error) {
-    console.error('❌ AI classification error:', error.message);
-    
-    // Intelligent fallback
-    let severity = 'medium';
-    if (eventData.severity === 'critical') severity = 'critical';
-    else if (eventData.severity === 'high' || eventData.type === 'error') severity = 'high';
-    else if (eventData.severity === 'low') severity = 'low';
-    
-    return {
-      severity,
-      category: eventData.type || 'info',
-      confidence: 0.6,
-      reasoning: 'AI unavailable, using rule-based classification'
-    };
-  }
-}
-
-/**
- * AI Agent that decides what action to take
- */
-export async function decideAction(eventData, classification) {
-  // MOCK MODE
-  if (MOCK_MODE) {
-    console.log('🤖 AI Decision (Mock Mode)');
-    
-    let action = 'monitor';
-    let reasoning = '';
-    
-    if (classification.severity === 'critical') {
-      action = 'escalate';
-      reasoning = 'Critical severity requires immediate human intervention';
-    } else if (classification.severity === 'high') {
-      action = 'auto-fix';
-      reasoning = 'High severity error - attempting automated remediation';
-    } else if (classification.severity === 'low') {
-      action = 'ignore';
-      reasoning = 'Low severity informational event requires no action';
-    } else {
-      action = 'monitor';
-      reasoning = 'Medium severity - monitoring with follow-up';
-    }
-    
-    return {
-      action,
-      priority: classification.severity,
-      reasoning,
-      parameters: {
-        retryCount: action === 'auto-fix' ? 3 : 0,
-        timeout: action === 'escalate' ? 60 : 300,
-        notifyChannels: action === 'escalate' ? ['slack', 'email'] : []
-      }
-    };
-  }
-  
-  // REAL AI MODE
-  const prompt = `You are an operational decision agent. Based on the event and classification, decide what action to take.
+  const prompt = `You are an operational event classifier for a backend monitoring system.
+Analyze this event and respond with ONLY a valid JSON object, no explanation.
 
 Event:
 - Type: ${eventData.type}
 - Source: ${eventData.source}
 - Message: ${eventData.message || 'N/A'}
+- Severity hint: ${eventData.severity || 'unknown'}
+- Project: ${eventData.metadata?.project || 'unknown'}
+- Environment: ${eventData.metadata?.environment || 'production'}
 
-Classification:
+Rules:
+- critical: payment failures, auth breaches, data loss, complete outages
+- high: database errors, service crashes, repeated failures, timeouts
+- medium: rate limits, slow responses, validation errors, warnings  
+- low: informational events, successful ops, minor warnings
+
+Return ONLY this JSON (no markdown, no explanation):
+{
+  "severity": "low|medium|high|critical",
+  "category": "error|alert|info|warning",
+  "confidence": 0.0,
+  "reasoning": "one sentence explanation"
+}`;
+
+  try {
+    const text = await callAI(prompt);
+    const classification = extractJSON(text);
+
+    // Validate required fields
+    if (!classification.severity || !classification.category) {
+      throw new Error('Missing required fields in classification response');
+    }
+
+    console.log(`✅ AI Classified: ${classification.severity} severity (confidence: ${classification.confidence})`);
+    console.log(`   Reasoning: ${classification.reasoning}`);
+    return classification;
+
+  } catch (error) {
+    console.error('❌ AI classification error:', error.message);
+
+    // Smart rule-based fallback
+    let severity = eventData.severity || 'medium';
+    // Normalize severity from message keywords
+    const msg = (eventData.message || '').toLowerCase();
+    if (msg.includes('payment') || msg.includes('auth') || msg.includes('breach')) severity = 'critical';
+    else if (msg.includes('crash') || msg.includes('timeout') || msg.includes('database')) severity = 'high';
+    else if (msg.includes('warn') || msg.includes('rate limit') || msg.includes('slow')) severity = 'medium';
+
+    return {
+      severity,
+      category: eventData.type || 'error',
+      confidence: 0.55,
+      reasoning: `Rule-based fallback (AI error: ${error.message.slice(0, 60)})`
+    };
+  }
+}
+
+// ─── Action Decider ────────────────────────────────────────────────────────
+export async function decideAction(eventData, classification) {
+  const provider = GROQ_API_KEY ? 'Groq' : 'Anthropic';
+  console.log(`🤖 Deciding action via ${provider}...`);
+
+  const prompt = `You are an autonomous incident response agent for a production backend system.
+Based on the event below, decide the best action. Respond with ONLY valid JSON.
+
+Event:
+- Type: ${eventData.type}
+- Source: ${eventData.source}  
+- Message: ${eventData.message || 'N/A'}
+- Project: ${eventData.metadata?.project || 'unknown'}
+- Environment: ${eventData.metadata?.environment || 'production'}
+
+AI Classification:
 - Severity: ${classification.severity}
 - Category: ${classification.category}
+- Confidence: ${classification.confidence}
+- Reasoning: ${classification.reasoning}
 
-Available actions:
-1. "ignore" - not important
-2. "auto-fix" - automated remediation
-3. "escalate" - notify humans
-4. "monitor" - watch and follow-up
+Action guidelines:
+- "ignore": low severity, informational, no impact on users
+- "monitor": medium severity, watch for escalation, schedule follow-up
+- "auto-fix": high severity with known automated remediation (restart, reconnect, clear cache)
+- "escalate": critical severity, unknown cause, needs human, security issues, financial impact
 
-Respond with this exact JSON structure (nothing else):
+Return ONLY this JSON (no markdown, no explanation):
 {
-  "action": "ignore|auto-fix|escalate|monitor",
+  "action": "ignore|monitor|auto-fix|escalate",
   "priority": "low|medium|high|critical",
-  "reasoning": "why this action",
+  "reasoning": "one sentence why this action",
   "parameters": {
     "retryCount": 3,
     "timeout": 300,
@@ -206,60 +188,53 @@ Respond with this exact JSON structure (nothing else):
 }`;
 
   try {
-    console.log(`🤖 Calling ${USE_OPENROUTER ? 'OpenRouter' : 'Anthropic'} API...`);
     const text = await callAI(prompt);
-    
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('No JSON found in AI response');
+    const decision = extractJSON(text);
+
+    if (!decision.action) {
+      throw new Error('Missing action field in decision response');
     }
-    
-    const decision = JSON.parse(jsonMatch[0]);
-    console.log('✅ AI Decision:', decision);
-    
+
+    console.log(`✅ AI Decision: ${decision.action} (priority: ${decision.priority})`);
+    console.log(`   Reasoning: ${decision.reasoning}`);
     return decision;
-    
+
   } catch (error) {
     console.error('❌ AI decision error:', error.message);
-    
-    const fallbackAction = classification.severity === 'critical' 
-      ? 'escalate' 
-      : classification.severity === 'high'
-      ? 'auto-fix'
-      : 'monitor';
-    
+
+    const fallbackAction =
+      classification.severity === 'critical' ? 'escalate' :
+      classification.severity === 'high'     ? 'auto-fix' :
+      classification.severity === 'medium'   ? 'monitor'  : 'ignore';
+
     return {
       action: fallbackAction,
       priority: classification.severity,
-      reasoning: 'AI unavailable, using rule-based decision',
-      parameters: {
-        retryCount: 3,
-        timeout: 300
-      }
+      reasoning: `Rule-based fallback (AI error: ${error.message.slice(0, 60)})`,
+      parameters: { retryCount: 3, timeout: 300, notifyChannels: ['slack'] }
     };
   }
 }
 
-/**
- * Generate summary
- */
+// ─── Summary Generator ─────────────────────────────────────────────────────
 export async function generateSummary(workflowData) {
-  if (MOCK_MODE) {
-    const { eventType, classification, decision, outcome } = workflowData;
-    return `Processed ${eventType} event (${classification.severity} severity). AI decided to ${decision.action}. Status: ${outcome}.`;
-  }
-  
-  const prompt = `Summarize in 2 sentences:
-Event: ${workflowData.eventType}
-Severity: ${workflowData.classification.severity}
-Action: ${workflowData.decision.action}
-Outcome: ${workflowData.outcome}`;
+  const prompt = `Write a 2-sentence incident summary for an ops dashboard. Be specific and factual.
+
+Incident data:
+- Event type: ${workflowData.eventType}
+- Severity: ${workflowData.classification.severity}
+- AI reasoning: ${workflowData.classification.reasoning}
+- Action taken: ${workflowData.decision.action}
+- Action reasoning: ${workflowData.decision.reasoning}
+- Outcome: ${workflowData.outcome}
+
+Write only the 2 sentences, no labels or formatting.`;
 
   try {
     const summary = await callAI(prompt);
-    return summary;
+    return summary.trim();
   } catch (error) {
     console.error('❌ Summary error:', error.message);
-    return `Workflow executed. Event: ${workflowData.eventType}, Action: ${workflowData.decision.action}.`;
+    return `${workflowData.classification.severity.toUpperCase()} ${workflowData.eventType} event detected from ${workflowData.decision.reasoning}. Action taken: ${workflowData.decision.action} — outcome: ${workflowData.outcome}.`;
   }
 }
