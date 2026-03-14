@@ -1,234 +1,188 @@
-import { ingestEvent } from '../steps/ingestEvent.js';
-import { classifyEvent } from '../steps/classifyEvent.js';
-import { decideAction } from '../steps/decideAction.js';
-import { executeAction } from '../steps/executeAction.js';
-import { verifyOutcome } from '../steps/verifyOutcome.js';
+import { ingestEvent }    from '../steps/ingestEvent.js';
+import { classifyEvent }  from '../steps/classifyEvent.js';
+import { decideAction }   from '../steps/decideAction.js';
+import { executeAction }  from '../steps/executeAction.js';
+import { verifyOutcome }  from '../steps/verifyOutcome.js';
 import { scheduleFollowUp } from '../steps/scheduleFollowUp.js';
-import { generateSummary } from '../agents/decisionAgent.js';
+import { generateSummary }  from '../agents/decisionAgent.js';
 import { findCorrelatedEvents, recordEvent, getProjectPatterns } from '../correlation/eventCorrelator.js';
 import { applyPolicies, requiresApproval } from '../policies/policyEngine.js';
 import { createApprovalRequest, waitForApproval } from '../approvals/approvalManager.js';
 import { getProject, getProjectHealth } from '../registry/projects.js';
+import { resultsDB } from '../db/database.js';
 
-/**
- * ENHANCED WORKFLOW: handleOperationalEvent
- * 
- * Features:
- * - Project/Service awareness
- * - Event correlation & deduplication  
- * - Policy engine (AI + Rules)
- * - Human-in-the-loop approvals
- */
 export default async function handleOperationalEvent(input, context) {
   const { eventId, data } = input;
-  
-  console.log(`\n🚀 Starting ENHANCED workflow for event: ${eventId}`);
-  console.log(`📍 Event type: ${data.type}`);
-  
-  // Get project info if available
+
+  console.log(`\n🚀 Starting workflow for event: ${eventId}`);
+  console.log(`📍 Type: ${data.type} | Project: ${data.metadata?.project || 'unknown'}`);
+
   const project = data.metadata?.project ? getProject(data.metadata.project) : null;
   if (project) {
-    console.log(`🏢 Project: ${project.name} (${project.criticality} criticality)`);
-    console.log(`👥 Owner: ${project.owner}`);
+    console.log(`🏢 ${project.name} (${project.criticality} criticality) — owner: ${project.owner}`);
   }
-  
+
   try {
-    // STEP 0: Check for correlated/duplicate events
+    // STEP 0: Correlation & deduplication
     console.log('\n--- STEP 0: Event Correlation ---');
     const correlation = findCorrelatedEvents(data);
-    
+
     if (correlation.isDuplicate) {
-      console.log(`⚠️ DUPLICATE EVENT DETECTED!`);
-      console.log(`   Similar event occurred ${correlation.events.length} time(s) recently`);
-      console.log(`   Skipping workflow, correlating with existing events`);
-      
+      console.log(`⚠️  DUPLICATE — skipping workflow (${correlation.events.length} similar recent events)`);
       recordEvent(data);
-      
-      return {
-        eventId,
-        action: 'correlated',
-        correlatedWith: correlation.events.map(e => e.id),
-        message: 'Event correlated with recent similar events, no new workflow needed'
-      };
+      return { eventId, action: 'correlated', message: 'Duplicate suppressed' };
     }
-    
+
     if (correlation.isStorm) {
-      console.log(`🌪️ ALERT STORM DETECTED!`);
-      console.log(`   ${correlation.count} similar events in last 5 minutes`);
-      console.log(`   Auto-escalating to prevent spam`);
+      console.log(`🌪️  ALERT STORM — ${correlation.count} similar events in 5 min, will auto-escalate`);
     }
-    
+
     recordEvent(data);
-    
-    // STEP 1: Ingest Event
-    console.log('\n--- STEP 1: Ingest Event ---');
-    const step1Result = await context.step('ingestEvent', async () => {
-      return ingestEvent({ eventId, data }, context);
+
+    // STEP 1: Ingest
+    console.log('\n--- STEP 1: Ingest ---');
+    const step1 = await context.step('ingestEvent', () => ingestEvent({ eventId, data }, context));
+
+    // STEP 2: AI Classification
+    console.log('\n--- STEP 2: AI Classification ---');
+    const step2 = await context.step('classifyEvent', () => classifyEvent(step1, context));
+
+    // STEP 3: AI Decision
+    console.log('\n--- STEP 3: AI Decision ---');
+    const step3 = await context.step('decideAction', () => decideAction(step2, context));
+
+    // STEP 3.5: Policy Engine
+    console.log('\n--- STEP 3.5: Policy Engine ---');
+    const policyStep = await context.step('applyPolicies', async () => {
+      const decision = applyPolicies(step1.eventData, step2.classification, step3.decision);
+      console.log(`📋 Final Action : ${decision.action}`);
+      console.log(`   AI Suggested : ${decision.aiSuggestion || decision.action}`);
+      console.log(`   Policy Used  : ${decision.policyApplied ? 'YES' : 'NO'}`);
+      console.log(`   Need Approval: ${decision.requiresApproval ? 'YES ⚠️' : 'NO'}`);
+      return { ...step3, decision, policyApplied: decision.policyApplied };
     });
-    
-    // STEP 2: Classify Event (AI Agent)
-    console.log('\n--- STEP 2: Classify Event (AI) ---');
-    const step2Result = await context.step('classifyEvent', async () => {
-      return classifyEvent(step1Result, context);
-    });
-    
-    // STEP 3: Decide Action (AI Agent)
-    console.log('\n--- STEP 3: Decide Action (AI) ---');
-    const step3Result = await context.step('decideAction', async () => {
-      return decideAction(step2Result, context);
-    });
-    
-    // STEP 3.5: Apply Policy Engine
-    console.log('\n--- STEP 3.5: Apply Policy Engine ---');
-    const policyDecision = await context.step('applyPolicies', async () => {
-      const decision = applyPolicies(
-        step1Result.eventData,
-        step2Result.classification,
-        step3Result.decision
-      );
-      
-      console.log(`📋 Policy Result:`);
-      console.log(`   Final Action: ${decision.action}`);
-      console.log(`   AI Suggested: ${decision.aiSuggestion || decision.action}`);
-      console.log(`   Policy Applied: ${decision.policyApplied ? 'YES' : 'NO'}`);
-      console.log(`   Requires Approval: ${decision.requiresApproval ? 'YES' : 'NO'}`);
-      
-      return {
-        ...step3Result,
-        decision,
-        policyApplied: decision.policyApplied
-      };
-    });
-    
-    // Check if approval needed (alert storm override)
-    let finalDecision = policyDecision.decision;
+
+    let finalDecision  = policyStep.decision;
     let approvalResult = null;
-    
+
+    // Alert storm overrides approval requirement
     if (correlation.isStorm) {
-      console.log('\n🌪️ Alert storm override: Auto-escalating');
+      console.log('\n🌪️  Alert storm override — forcing escalate');
       finalDecision = {
         ...finalDecision,
         action: 'escalate',
-        reasoning: `Alert storm detected (${correlation.count} similar events). Auto-escalating to prevent noise.`,
+        reasoning: `Alert storm (${correlation.count} events). Auto-escalating.`,
         stormOverride: true
       };
     }
-    
-    // STEP 4: Human-in-the-Loop Approval (if needed)
+
+    // STEP 4: Real Human Approval (only if required and not a storm)
     if (requiresApproval(finalDecision) && !correlation.isStorm) {
-      console.log('\n--- STEP 4: Request Human Approval ---');
-      
+      console.log('\n--- STEP 4: Human Approval Required ---');
+
       const approvalRequest = await context.step('requestApproval', async () => {
-        const request = createApprovalRequest(
-          step1Result.eventData,
-          finalDecision,
-          step2Result.classification
-        );
-        
-        console.log(`⏸️ Workflow PAUSED - Waiting for approval`);
-        console.log(`   Approval ID: ${request.id}`);
-        console.log(`   Expires: ${request.expiresAt}`);
-        console.log(`   👉 Check frontend for approval interface!`);
-        
-        return request;
+        return createApprovalRequest(step1.eventData, finalDecision, step2.classification);
       });
-      
-      // Simulate approval wait (in real system, would wait for actual human input)
-      console.log(`\n⏳ Simulating approval wait (5 seconds for demo)...`);
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      
-      // Simulate approval decision
-      const shouldApprove = Math.random() > 0.3; // 70% approve rate for demo
-      
-      if (shouldApprove) {
-        console.log(`✅ APPROVED by operator (simulated)`);
-        approvalResult = { approved: true, approvalRequest };
-      } else {
-        console.log(`❌ REJECTED by operator (simulated)`);
+
+      // ← THIS is the real change: genuinely waits for a human click
+      const approvalOutcome = await waitForApproval(approvalRequest.id);
+      approvalResult = approvalOutcome;
+
+      if (!approvalOutcome.approved) {
+        // Human rejected or timed out — force escalate
         finalDecision = {
           ...finalDecision,
-          action: 'escalate',
-          reasoning: 'Action rejected by operator, escalating to team',
-          wasRejected: true
+          action:      'escalate',
+          reasoning:   approvalOutcome.timedOut
+            ? 'No response within 10 minutes — auto-escalated'
+            : 'Operator rejected action — escalating to team',
+          wasRejected: !approvalOutcome.timedOut
         };
-        approvalResult = { approved: false, approvalRequest };
+        console.log(`⚡ Continuing with escalate\n`);
+      } else {
+        // Approved — execute the original AI suggestion
+        finalDecision = {
+          ...finalDecision,
+          action:   finalDecision.aiSuggestion || 'escalate',
+          approved: true
+        };
+        console.log(`⚡ Continuing with approved action: ${finalDecision.action}\n`);
       }
     }
-    
-    // STEP 5: Execute Action
+
+    // STEP 5: Execute
     console.log('\n--- STEP 5: Execute Action ---');
-    const step4Result = await context.step('executeAction', async () => {
-      return executeAction({
-        ...policyDecision,
-        decision: finalDecision,
-        classification: step2Result.classification, // Pass classification for emails
+    const step5 = await context.step('executeAction', () =>
+      executeAction({
+        ...policyStep,
+        decision:       finalDecision,
+        classification: step2.classification,
         approvalResult
-      }, context);
-    });
-    
-    // STEP 6: Verify Outcome
+      }, context)
+    );
+
+    // STEP 6: Verify
     console.log('\n--- STEP 6: Verify Outcome ---');
-    const step5Result = await context.step('verifyOutcome', async () => {
-      return verifyOutcome(step4Result, context);
-    });
-    
-    // STEP 7: Schedule Follow-Up
+    const step6 = await context.step('verifyOutcome', () => verifyOutcome(step5, context));
+
+    // STEP 7: Follow-Up
     console.log('\n--- STEP 7: Schedule Follow-Up ---');
-    const step6Result = await context.step('scheduleFollowUp', async () => {
-      return scheduleFollowUp(step5Result, context);
-    });
-    
-    // Generate AI summary
+    const step7 = await context.step('scheduleFollowUp', () => scheduleFollowUp(step6, context));
+
+    // Summary
     console.log('\n--- Generating Summary ---');
     const summary = await generateSummary({
-      eventType: step1Result.eventData.type,
-      classification: step2Result.classification,
-      decision: finalDecision,
-      outcome: step5Result.verification.status
+      eventType:      step1.eventData.type,
+      classification: step2.classification,
+      decision:       finalDecision,
+      outcome:        step6.verification.status
     });
-    
-    // Get project health if applicable
+
+    // Project health
     let projectHealth = null;
     if (project) {
-      console.log('\n--- Checking Project Health ---');
       projectHealth = getProjectHealth(data.metadata.project, []);
       console.log(`📊 Project Health: ${projectHealth?.health || 'unknown'}`);
     }
-    
-    // Get event patterns
+
+    // Patterns
     let patterns = null;
     if (data.metadata?.project) {
       patterns = getProjectPatterns(data.metadata.project);
       if (patterns.patterns.length > 0) {
-        console.log('\n⚠️ Detected Patterns:');
-        patterns.patterns.forEach(p => {
-          console.log(`   - ${p.message}`);
-        });
+        console.log('\n⚠️  Patterns detected:');
+        patterns.patterns.forEach(p => console.log(`   - ${p.message}`));
       }
     }
-    
+
     const finalResult = {
-      ...step6Result,
+      ...step7,
       summary,
       projectHealth,
       patterns,
-      correlation: {
-        isDuplicate: correlation.isDuplicate,
-        isStorm: correlation.isStorm,
-        count: correlation.count
-      },
-      approvalNeeded: requiresApproval(finalDecision),
+      correlation:    { isDuplicate: false, isStorm: correlation.isStorm, count: correlation.count },
       approvalResult,
-      completedAt: new Date().toISOString()
+      completedAt:    new Date().toISOString()
     };
-    
-    console.log(`\n✅ ENHANCED Workflow completed: ${eventId}`);
-    console.log(`📝 Summary: ${summary}\n`);
-    
+
+    // Persist workflow result
+    resultsDB.upsert(eventId, {
+      classification: step2.classification,
+      decision:       finalDecision,
+      execution:      step5.execution,
+      verification:   step6.verification,
+      followUp:       step7.followUp,
+      summary,
+      completedAt:    finalResult.completedAt
+    });
+
+    console.log(`\n✅ Workflow complete: ${eventId}`);
+    console.log(`📝 ${summary}\n`);
+
     return finalResult;
-    
+
   } catch (error) {
-    console.error(`\n❌ Workflow failed for event: ${eventId}`, error);
+    console.error(`\n❌ Workflow failed for ${eventId}:`, error.message);
     throw error;
   }
 }

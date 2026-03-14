@@ -1,0 +1,332 @@
+/**
+ * AutoFlow Database Layer
+ * Single SQLite file — survives restarts, zero config, zero cost
+ */
+
+import Database from 'better-sqlite3';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DB_PATH = path.join(__dirname, '..', 'data', 'autoflow.db');
+
+// Ensure data directory exists
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+
+const db = new Database(DB_PATH);
+
+// Performance settings
+db.pragma('journal_mode = WAL');   // Allows concurrent reads during writes
+db.pragma('foreign_keys = ON');
+
+// ─── Schema ────────────────────────────────────────────────────────────────
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS events (
+    id          TEXT PRIMARY KEY,
+    type        TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    severity    TEXT NOT NULL,
+    message     TEXT,
+    project     TEXT,
+    environment TEXT,
+    metadata    TEXT,          -- JSON string
+    status      TEXT DEFAULT 'processing',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS workflow_results (
+    id              TEXT PRIMARY KEY,
+    event_id        TEXT NOT NULL,
+    classification  TEXT,      -- JSON string
+    decision        TEXT,      -- JSON string
+    execution       TEXT,      -- JSON string
+    verification    TEXT,      -- JSON string
+    follow_up       TEXT,      -- JSON string
+    summary         TEXT,
+    completed_at    TEXT,
+    FOREIGN KEY (event_id) REFERENCES events(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS approvals (
+    id              TEXT PRIMARY KEY,
+    event_id        TEXT NOT NULL,
+    project         TEXT,
+    environment     TEXT,
+    status          TEXT DEFAULT 'pending',   -- pending|approved|rejected|timeout
+    event_data      TEXT NOT NULL,            -- JSON string
+    classification  TEXT NOT NULL,            -- JSON string
+    proposed_action TEXT NOT NULL,            -- JSON string
+    approver        TEXT,
+    comments        TEXT,
+    rejection_reason TEXT,
+    created_at      TEXT NOT NULL,
+    expires_at      TEXT NOT NULL,
+    resolved_at     TEXT,
+    FOREIGN KEY (event_id) REFERENCES events(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS workflow_logs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id   TEXT NOT NULL,
+    type       TEXT NOT NULL,
+    step       TEXT,
+    message    TEXT,
+    data       TEXT,           -- JSON string for extra fields
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (event_id) REFERENCES events(id)
+  );
+
+  -- Indexes for common queries
+  CREATE INDEX IF NOT EXISTS idx_events_project    ON events(project);
+  CREATE INDEX IF NOT EXISTS idx_events_status     ON events(status);
+  CREATE INDEX IF NOT EXISTS idx_events_created    ON events(created_at);
+  CREATE INDEX IF NOT EXISTS idx_approvals_status  ON approvals(status);
+  CREATE INDEX IF NOT EXISTS idx_logs_event_id     ON workflow_logs(event_id);
+`);
+
+console.log(`✅ Database ready: ${DB_PATH}`);
+
+// ─── Events ────────────────────────────────────────────────────────────────
+
+export const eventsDB = {
+
+  insert(event) {
+    const stmt = db.prepare(`
+      INSERT INTO events (id, type, source, severity, message, project, environment, metadata, status, created_at, updated_at)
+      VALUES (@id, @type, @source, @severity, @message, @project, @environment, @metadata, @status, @created_at, @updated_at)
+    `);
+    stmt.run({
+      id:          event.id,
+      type:        event.type,
+      source:      event.source,
+      severity:    event.severity || 'medium',
+      message:     event.message || '',
+      project:     event.metadata?.project || 'unknown',
+      environment: event.metadata?.environment || 'production',
+      metadata:    JSON.stringify(event.metadata || {}),
+      status:      event.status || 'processing',
+      created_at:  event.timestamp || new Date().toISOString(),
+      updated_at:  new Date().toISOString()
+    });
+    return event;
+  },
+
+  updateStatus(id, status) {
+    db.prepare(`UPDATE events SET status = ?, updated_at = ? WHERE id = ?`)
+      .run(status, new Date().toISOString(), id);
+  },
+
+  getAll({ project, limit = 50 } = {}) {
+    let query = `SELECT * FROM events`;
+    const params = [];
+    if (project && project !== 'all') {
+      query += ` WHERE project = ?`;
+      params.push(project);
+    }
+    query += ` ORDER BY created_at DESC LIMIT ?`;
+    params.push(limit);
+
+    return db.prepare(query).all(...params).map(parseEvent);
+  },
+
+  getById(id) {
+    const row = db.prepare(`SELECT * FROM events WHERE id = ?`).get(id);
+    return row ? parseEvent(row) : null;
+  },
+
+  count({ project } = {}) {
+    if (project) {
+      return db.prepare(`SELECT COUNT(*) as c FROM events WHERE project = ?`).get(project).c;
+    }
+    return db.prepare(`SELECT COUNT(*) as c FROM events`).get().c;
+  }
+};
+
+function parseEvent(row) {
+  return {
+    ...row,
+    metadata: safeJSON(row.metadata, {})
+  };
+}
+
+// ─── Workflow Results ───────────────────────────────────────────────────────
+
+export const resultsDB = {
+
+  upsert(eventId, result) {
+    const existing = db.prepare(`SELECT id FROM workflow_results WHERE event_id = ?`).get(eventId);
+
+    if (existing) {
+      db.prepare(`
+        UPDATE workflow_results
+        SET classification=?, decision=?, execution=?, verification=?, follow_up=?, summary=?, completed_at=?
+        WHERE event_id=?
+      `).run(
+        JSON.stringify(result.classification),
+        JSON.stringify(result.decision),
+        JSON.stringify(result.execution),
+        JSON.stringify(result.verification),
+        JSON.stringify(result.followUp),
+        result.summary || '',
+        result.completedAt || new Date().toISOString(),
+        eventId
+      );
+    } else {
+      db.prepare(`
+        INSERT INTO workflow_results (id, event_id, classification, decision, execution, verification, follow_up, summary, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        `result_${eventId}`,
+        eventId,
+        JSON.stringify(result.classification),
+        JSON.stringify(result.decision),
+        JSON.stringify(result.execution),
+        JSON.stringify(result.verification),
+        JSON.stringify(result.followUp),
+        result.summary || '',
+        result.completedAt || new Date().toISOString()
+      );
+    }
+  },
+
+  getByEventId(eventId) {
+    const row = db.prepare(`SELECT * FROM workflow_results WHERE event_id = ?`).get(eventId);
+    if (!row) return null;
+    return {
+      ...row,
+      classification: safeJSON(row.classification),
+      decision:       safeJSON(row.decision),
+      execution:      safeJSON(row.execution),
+      verification:   safeJSON(row.verification),
+      followUp:       safeJSON(row.follow_up)
+    };
+  }
+};
+
+// ─── Approvals ─────────────────────────────────────────────────────────────
+
+export const approvalsDB = {
+
+  insert(approval) {
+    db.prepare(`
+      INSERT INTO approvals (id, event_id, project, environment, status, event_data, classification, proposed_action, created_at, expires_at)
+      VALUES (@id, @event_id, @project, @environment, @status, @event_data, @classification, @proposed_action, @created_at, @expires_at)
+    `).run({
+      id:              approval.id,
+      event_id:        approval.eventId,
+      project:         approval.project || 'unknown',
+      environment:     approval.environment || 'production',
+      status:          'pending',
+      event_data:      JSON.stringify(approval.event),
+      classification:  JSON.stringify(approval.classification),
+      proposed_action: JSON.stringify(approval.proposedAction),
+      created_at:      approval.createdAt,
+      expires_at:      approval.expiresAt
+    });
+    return approval;
+  },
+
+  resolve(id, { status, approver, comments, rejectionReason }) {
+    db.prepare(`
+      UPDATE approvals
+      SET status=?, approver=?, comments=?, rejection_reason=?, resolved_at=?
+      WHERE id=?
+    `).run(
+      status,
+      approver || 'unknown',
+      comments || '',
+      rejectionReason || '',
+      new Date().toISOString(),
+      id
+    );
+    return this.getById(id);
+  },
+
+  getById(id) {
+    const row = db.prepare(`SELECT * FROM approvals WHERE id = ?`).get(id);
+    return row ? parseApproval(row) : null;
+  },
+
+  getPending() {
+    return db.prepare(`SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at DESC`)
+      .all().map(parseApproval);
+  },
+
+  getHistory(limit = 50) {
+    return db.prepare(`SELECT * FROM approvals WHERE status != 'pending' ORDER BY resolved_at DESC LIMIT ?`)
+      .all(limit).map(parseApproval);
+  },
+
+  getStats() {
+    const all     = db.prepare(`SELECT status, COUNT(*) as c FROM approvals GROUP BY status`).all();
+    const pending = db.prepare(`SELECT COUNT(*) as c FROM approvals WHERE status = 'pending'`).get().c;
+
+    const counts = { approved: 0, rejected: 0, timeout: 0 };
+    let total = 0;
+    all.forEach(r => {
+      if (r.status !== 'pending') {
+        counts[r.status] = (counts[r.status] || 0) + r.c;
+        total += r.c;
+      }
+    });
+
+    return {
+      total,
+      pending,
+      approved: counts.approved,
+      rejected: counts.rejected,
+      timeout:  counts.timeout,
+      approvalRate: total > 0 ? ((counts.approved / total) * 100).toFixed(1) : '0.0'
+    };
+  }
+};
+
+function parseApproval(row) {
+  return {
+    ...row,
+    eventId:        row.event_id,
+    event:          safeJSON(row.event_data, {}),
+    classification: safeJSON(row.classification, {}),
+    proposedAction: safeJSON(row.proposed_action, {}),
+    createdAt:      row.created_at,
+    expiresAt:      row.expires_at,
+    resolvedAt:     row.resolved_at
+  };
+}
+
+// ─── Workflow Logs ──────────────────────────────────────────────────────────
+
+export const logsDB = {
+
+  insert(eventId, log) {
+    db.prepare(`
+      INSERT INTO workflow_logs (event_id, type, step, message, data, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      eventId,
+      log.type,
+      log.step || null,
+      log.message || null,
+      JSON.stringify(log),
+      log.timestamp || new Date().toISOString()
+    );
+  },
+
+  getByEventId(eventId) {
+    return db.prepare(`SELECT * FROM workflow_logs WHERE event_id = ? ORDER BY id ASC`)
+      .all(eventId)
+      .map(row => safeJSON(row.data, { type: row.type, step: row.step }));
+  }
+};
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function safeJSON(str, fallback = null) {
+  if (!str) return fallback;
+  try { return JSON.parse(str); } catch { return fallback; }
+}
+
+export default db;

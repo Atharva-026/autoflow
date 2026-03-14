@@ -24,6 +24,7 @@
     "@motiadev/plugin-logs": "^0.17.9-beta.191",
     "@motiadev/plugin-observability": "^0.17.9-beta.191",
     "@motiadev/plugin-states": "^0.17.9-beta.191",
+    "better-sqlite3": "^12.8.0",
     "cors": "^2.8.5",
     "dotenv": "^16.0.3",
     "motia": "^0.17.9-beta.191",
