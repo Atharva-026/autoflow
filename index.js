@@ -297,6 +297,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /api/analytics/confidence/:projectId — approval patterns for a project
+  if (req.url.match(/^\/api\/analytics\/confidence\/[^\/]+$/) && req.method === 'GET') {
+    const projectId = req.url.split('/')[4];
+    const patterns  = analyticsDB.getApprovalPatterns(projectId);
+    const hint      = analyticsDB.buildConfidenceHint(projectId, 'auto-fix', 'high');
+    json(res, { success: true, projectId, patterns, hint });
+    return;
+  }
+
   // GET /api/analytics/runbook — past resolutions for similar events
   if (req.url.startsWith('/api/analytics/runbook') && req.method === 'GET') {
     const url    = new URL(req.url, 'http://localhost');

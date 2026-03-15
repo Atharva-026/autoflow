@@ -41,7 +41,7 @@ function extractJSON(text) {
 }
 
 // ─── Event Classifier ──────────────────────────────────────────────────────
-export async function classifyEvent(eventData, runbookHint = '') {
+export async function classifyEvent(eventData, runbookHint = '', confidenceHint = '') {
   console.log(`🤖 Classifying event via Groq (${GROQ_MODEL})...`);
 
   const prompt = `You are an operational event classifier for a backend monitoring system.
@@ -54,7 +54,8 @@ Event:
 - Severity hint: ${eventData.severity || 'unknown'}
 - Project: ${eventData.metadata?.project || 'unknown'}
 - Environment: ${eventData.metadata?.environment || 'production'}
-${runbookHint ? `\nHistorical context: ${runbookHint}` : ''}
+${runbookHint ? `\nPast resolution: ${runbookHint}` : ''}
+${confidenceHint ? `\nApproval patterns: ${confidenceHint}` : ''}
 
 Rules:
 - critical: payment failures, auth breaches, data loss, complete outages
@@ -89,7 +90,7 @@ Return ONLY this JSON (no markdown, no explanation):
 }
 
 // ─── Action Decider ────────────────────────────────────────────────────────
-export async function decideAction(eventData, classification, runbookHint = '') {
+export async function decideAction(eventData, classification, runbookHint = '', confidenceHint = '') {
   console.log(`🤖 Deciding action via Groq...`);
 
   const prompt = `You are an autonomous incident response agent for a production backend system.
@@ -101,7 +102,8 @@ Event:
 - Message: ${eventData.message || 'N/A'}
 - Project: ${eventData.metadata?.project || 'unknown'}
 - Environment: ${eventData.metadata?.environment || 'production'}
-${runbookHint ? `\nHistorical context: ${runbookHint}` : ''}
+${runbookHint ? `\nPast resolution: ${runbookHint}` : ''}
+${confidenceHint ? `\nApproval patterns (use to calibrate your recommendation): ${confidenceHint}` : ''}
 
 AI Classification:
 - Severity: ${classification.severity}

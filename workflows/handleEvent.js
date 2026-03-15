@@ -54,13 +54,42 @@ export default async function handleOperationalEvent(input, context) {
       }
     } catch(e) { /* non-fatal */ }
 
+    // STEP 1.6: Confidence tuning — check how humans have historically responded
+    let confidenceHint = '';
+    try {
+      const projectId = data.metadata?.project;
+      if (projectId) {
+        // We don't know the action yet, so use the most common action for this severity
+        // as a proxy — this gets refined after step 3
+        confidenceHint = analyticsDB.buildConfidenceHint(projectId, 'auto-fix', 'high');
+        if (confidenceHint) {
+          console.log(`\n🧠 Confidence context: ${confidenceHint.slice(0, 120)}...`);
+        }
+      }
+    } catch(e) { /* non-fatal */ }
+
     // STEP 2: AI Classification
     console.log('\n--- STEP 2: AI Classification ---');
-    const step2 = await context.step('classifyEvent', () => classifyEvent({ ...step1, runbookHint }, context));
+    const step2 = await context.step('classifyEvent', () => classifyEvent({ ...step1, runbookHint, confidenceHint }, context));
 
     // STEP 3: AI Decision
     console.log('\n--- STEP 3: AI Decision ---');
     const step3 = await context.step('decideAction', () => decideAction(step2, context));
+
+    // STEP 3.2: Refine confidence hint now that we know the AI's proposed action
+    try {
+      const projectId = data.metadata?.project;
+      if (projectId && step3.decision?.action) {
+        confidenceHint = analyticsDB.buildConfidenceHint(
+          projectId,
+          step3.decision.action,
+          step2.classification.severity
+        );
+        if (confidenceHint) {
+          console.log(`\n🧠 Refined confidence: ${confidenceHint.slice(0, 120)}...`);
+        }
+      }
+    } catch(e) { /* non-fatal */ }
 
     // STEP 3.5: Policy Engine
     console.log('\n--- STEP 3.5: Policy Engine ---');
