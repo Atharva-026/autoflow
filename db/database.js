@@ -85,6 +85,22 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_events_created    ON events(created_at);
   CREATE INDEX IF NOT EXISTS idx_approvals_status  ON approvals(status);
   CREATE INDEX IF NOT EXISTS idx_logs_event_id     ON workflow_logs(event_id);
+  CREATE TABLE IF NOT EXISTS projects (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    environment     TEXT DEFAULT 'production',
+    owner           TEXT DEFAULT 'unknown',
+    criticality     TEXT DEFAULT 'medium',
+    contacts        TEXT DEFAULT '{}',     -- JSON
+    policy_override TEXT DEFAULT NULL,     -- JSON: {overrideAll, severity overrides}
+    webhook_url     TEXT DEFAULT NULL,     -- called on every escalate
+    fix_script      TEXT DEFAULT NULL,     -- shell command run on auto-fix
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_projects_criticality ON projects(criticality);
+
 `);
 
 console.log(`✅ Database ready: ${DB_PATH}`);
@@ -330,3 +346,81 @@ function safeJSON(str, fallback = null) {
 }
 
 export default db;
+
+// ─── Projects (replaces hardcoded registry) ────────────────────────────────
+
+export const projectsDB = {
+
+  // Called once on startup to seed default projects if table is empty
+  seed(defaults) {
+    const count = db.prepare(`SELECT COUNT(*) as c FROM projects`).get().c;
+    if (count > 0) return;
+    console.log('🌱 Seeding default projects...');
+    defaults.forEach(p => this.insert(p));
+  },
+
+  insert(p) {
+    db.prepare(`
+      INSERT OR REPLACE INTO projects
+        (id, name, environment, owner, criticality, contacts, policy_override,
+         webhook_url, fix_script, created_at, updated_at)
+      VALUES
+        (@id,@name,@environment,@owner,@criticality,@contacts,@policy_override,
+         @webhook_url,@fix_script,@created_at,@updated_at)
+    `).run({
+      id:              p.id,
+      name:            p.name,
+      environment:     p.environment     || 'production',
+      owner:           p.owner           || 'unknown',
+      criticality:     p.criticality     || 'medium',
+      contacts:        JSON.stringify(p.contacts        || {}),
+      policy_override: JSON.stringify(p.policyOverride  || null),
+      webhook_url:     p.webhookUrl      || null,
+      fix_script:      p.fixScript       || null,
+      created_at:      p.createdAt       || new Date().toISOString(),
+      updated_at:      new Date().toISOString()
+    });
+    return this.getById(p.id);
+  },
+
+  update(id, fields) {
+    const existing = this.getById(id);
+    if (!existing) throw new Error(`Project ${id} not found`);
+    const merged = { ...existing, ...fields, id, updatedAt: new Date().toISOString() };
+    return this.insert({ ...merged,
+      policyOverride: fields.policyOverride ?? existing.policyOverride,
+      webhookUrl:     fields.webhookUrl     ?? existing.webhookUrl,
+      fixScript:      fields.fixScript      ?? existing.fixScript
+    });
+  },
+
+  delete(id) {
+    db.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
+  },
+
+  getById(id) {
+    const row = db.prepare(`SELECT * FROM projects WHERE id = ?`).get(id);
+    return row ? parseProject(row) : null;
+  },
+
+  getAll() {
+    return db.prepare(`SELECT * FROM projects ORDER BY criticality DESC, name ASC`)
+      .all().map(parseProject);
+  }
+};
+
+function parseProject(row) {
+  return {
+    id:             row.id,
+    name:           row.name,
+    environment:    row.environment,
+    owner:          row.owner,
+    criticality:    row.criticality,
+    contacts:       safeJSON(row.contacts, {}),
+    policyOverride: safeJSON(row.policy_override, null),
+    webhookUrl:     row.webhook_url  || null,
+    fixScript:      row.fix_script   || null,
+    createdAt:      row.created_at,
+    updatedAt:      row.updated_at
+  };
+}

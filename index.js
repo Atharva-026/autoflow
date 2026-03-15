@@ -4,7 +4,7 @@ dotenv.config();
 import http from 'http';
 import { eventsDB, logsDB } from './db/database.js';
 import handleOperationalEvent from './workflows/handleEvent.js';
-import { getAllProjects, getProjectHealth } from './registry/projects.js';
+import { getAllProjects, getProject, createProject, updateProject, deleteProject, getProjectHealth } from './registry/projects.js';
 import { getCorrelationStats } from './correlation/eventCorrelator.js';
 import { getAllPolicies } from './policies/policyEngine.js';
 import {
@@ -64,8 +64,56 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── Projects ────────────────────────────────────────────────────────────
+  // GET all projects
   if (req.url === '/api/projects' && req.method === 'GET') {
     json(res, { success: true, projects: getAllProjects() });
+    return;
+  }
+
+  // POST /api/projects — create new project
+  if (req.url === '/api/projects' && req.method === 'POST') {
+    const body = await readBody(req);
+    try {
+      const data = JSON.parse(body);
+      if (!data.id || !data.name) { json(res, { error: 'id and name are required' }, 400); return; }
+      // Slugify id
+      data.id = data.id.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
+      const project = createProject({ ...data, createdAt: new Date().toISOString() });
+      broadcastLog({ type: 'project_created', project, timestamp: new Date().toISOString() });
+      json(res, { success: true, project }, 201);
+    } catch (e) { json(res, { error: e.message }, 400); }
+    return;
+  }
+
+  // GET /api/projects/:id
+  if (req.url.match(/^\/api\/projects\/[^\/]+$/) && req.method === 'GET') {
+    const id = req.url.split('/')[3];
+    const project = getProject(id);
+    if (!project) { json(res, { error: 'Project not found' }, 404); return; }
+    json(res, { success: true, project });
+    return;
+  }
+
+  // PUT /api/projects/:id — update project
+  if (req.url.match(/^\/api\/projects\/[^\/]+$/) && req.method === 'PUT') {
+    const id   = req.url.split('/')[3];
+    const body = await readBody(req);
+    try {
+      const data    = JSON.parse(body);
+      const project = updateProject(id, data);
+      broadcastLog({ type: 'project_updated', project, timestamp: new Date().toISOString() });
+      json(res, { success: true, project });
+    } catch (e) { json(res, { error: e.message }, 400); }
+    return;
+  }
+
+  // DELETE /api/projects/:id
+  if (req.url.match(/^\/api\/projects\/[^\/]+$/) && req.method === 'DELETE') {
+    const id = req.url.split('/')[3];
+    try {
+      deleteProject(id);
+      json(res, { success: true, message: `Project ${id} deleted` });
+    } catch (e) { json(res, { error: e.message }, 400); }
     return;
   }
 

@@ -74,4 +74,4 @@ export async function notify(eventData, classification, decision, outcome = 'esc
   }
 
   return results;
-} 
+}
