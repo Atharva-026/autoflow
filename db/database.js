@@ -424,3 +424,192 @@ function parseProject(row) {
     updatedAt:      row.updated_at
   };
 }
+
+// ─── Analytics queries ─────────────────────────────────────────────────────
+
+export const analyticsDB = {
+
+  // Overall metrics
+  getMetrics() {
+    const total     = db.prepare(`SELECT COUNT(*) as c FROM events`).get().c;
+    const completed = db.prepare(`SELECT COUNT(*) as c FROM events WHERE status='completed'`).get().c;
+    const failed    = db.prepare(`SELECT COUNT(*) as c FROM events WHERE status='failed'`).get().c;
+    const processing= db.prepare(`SELECT COUNT(*) as c FROM events WHERE status='processing'`).get().c;
+
+    // Average resolution time in minutes
+    const avgTime = db.prepare(`
+      SELECT AVG((julianday(r.completed_at) - julianday(e.created_at)) * 1440) as avg_minutes
+      FROM workflow_results r
+      JOIN events e ON e.id = r.event_id
+      WHERE r.completed_at IS NOT NULL
+    `).get().avg_minutes;
+
+    // Severity breakdown
+    const bySeverity = db.prepare(`
+      SELECT severity, COUNT(*) as count FROM events GROUP BY severity
+    `).all();
+
+    // Action breakdown from workflow_results
+    const byAction = db.prepare(`
+      SELECT json_extract(decision, '$.action') as action, COUNT(*) as count
+      FROM workflow_results
+      WHERE decision IS NOT NULL
+      GROUP BY action
+    `).all();
+
+    // Events per day (last 7 days)
+    const perDay = db.prepare(`
+      SELECT date(created_at) as day, COUNT(*) as count
+      FROM events
+      WHERE created_at >= date('now', '-7 days')
+      GROUP BY date(created_at)
+      ORDER BY day ASC
+    `).all();
+
+    // AI accuracy — how often AI decision matched final action
+    const aiAccuracy = db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN json_extract(decision,'$.aiSuggestion') = json_extract(decision,'$.action')
+                   OR json_extract(decision,'$.policyApplied') = 0
+            THEN 1 ELSE 0 END) as matched
+      FROM workflow_results WHERE decision IS NOT NULL
+    `).get();
+
+    return {
+      total, completed, failed, processing,
+      resolutionRate: total > 0 ? ((completed / total) * 100).toFixed(1) : '0.0',
+      avgResolutionMinutes: avgTime ? avgTime.toFixed(1) : null,
+      bySeverity: Object.fromEntries(bySeverity.map(r => [r.severity, r.count])),
+      byAction:   Object.fromEntries(byAction.filter(r => r.action).map(r => [r.action, r.count])),
+      perDay,
+      aiAccuracy: aiAccuracy.total > 0
+        ? ((aiAccuracy.matched / aiAccuracy.total) * 100).toFixed(1)
+        : '0.0'
+    };
+  },
+
+  // Per-project metrics
+  getProjectMetrics(projectId) {
+    const events = db.prepare(`
+      SELECT e.*, r.classification, r.decision, r.verification, r.summary, r.completed_at
+      FROM events e
+      LEFT JOIN workflow_results r ON r.event_id = e.id
+      WHERE e.project = ?
+      ORDER BY e.created_at DESC
+    `).all(projectId).map(row => ({
+      ...row,
+      classification: safeJSON(row.classification),
+      decision:       safeJSON(row.decision),
+      verification:   safeJSON(row.verification)
+    }));
+
+    const total     = events.length;
+    const resolved  = events.filter(e => e.verification?.status === 'resolved').length;
+    const escalated = events.filter(e => e.decision?.action === 'escalate').length;
+    const autoFixed = events.filter(e => e.decision?.action === 'auto-fix').length;
+
+    // Most common error messages
+    const messageCounts = {};
+    events.forEach(e => {
+      const key = (e.message || 'unknown').slice(0, 60);
+      messageCounts[key] = (messageCounts[key] || 0) + 1;
+    });
+    const topErrors = Object.entries(messageCounts)
+      .sort(([,a],[,b]) => b - a).slice(0, 5)
+      .map(([message, count]) => ({ message, count }));
+
+    return { projectId, total, resolved, escalated, autoFixed, topErrors, recentEvents: events.slice(0, 20) };
+  },
+
+  // Incident history with filters
+  getHistory({ project, severity, status, search, limit = 50, offset = 0 } = {}) {
+    let where = [];
+    let params = [];
+
+    if (project && project !== 'all') { where.push(`e.project = ?`);   params.push(project); }
+    if (severity)  { where.push(`e.severity = ?`);  params.push(severity); }
+    if (status)    { where.push(`e.status = ?`);    params.push(status); }
+    if (search)    { where.push(`(e.message LIKE ? OR e.source LIKE ?)`); params.push(`%${search}%`, `%${search}%`); }
+
+    const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+
+    const rows = db.prepare(`
+      SELECT e.*, r.classification, r.decision, r.verification, r.summary
+      FROM events e
+      LEFT JOIN workflow_results r ON r.event_id = e.id
+      ${whereClause}
+      ORDER BY e.created_at DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, limit, offset);
+
+    const countRow = db.prepare(`
+      SELECT COUNT(*) as c FROM events e ${whereClause}
+    `).get(...params);
+
+    return {
+      incidents: rows.map(row => ({
+        ...row,
+        classification: safeJSON(row.classification),
+        decision:       safeJSON(row.decision),
+        verification:   safeJSON(row.verification)
+      })),
+      total:  countRow.c,
+      limit,
+      offset
+    };
+  },
+
+  // Pattern detection — finds recurring issues
+  getPatterns(projectId, windowHours = 24) {
+    const rows = db.prepare(`
+      SELECT e.message, e.severity, e.source, e.type,
+             COUNT(*) as count,
+             MAX(e.created_at) as last_seen,
+             MIN(e.created_at) as first_seen
+      FROM events e
+      WHERE e.created_at >= datetime('now', '-${windowHours} hours')
+      ${projectId ? 'AND e.project = ?' : ''}
+      GROUP BY e.type, e.source, substr(e.message, 1, 60)
+      HAVING count >= 2
+      ORDER BY count DESC
+      LIMIT 20
+    `).all(...(projectId ? [projectId] : []));
+
+    return rows.map(r => ({
+      ...r,
+      pattern: r.count >= 5 ? 'storm' : r.count >= 3 ? 'recurring' : 'repeat',
+      suggestion: getSuggestion(r)
+    }));
+  },
+
+  // Runbook: past resolutions for similar events
+  getRunbook(eventType, source, projectId) {
+    const rows = db.prepare(`
+      SELECT e.message, e.severity,
+             r.decision, r.verification, r.summary,
+             e.created_at
+      FROM events e
+      JOIN workflow_results r ON r.event_id = e.id
+      WHERE e.type = ?
+        AND e.source = ?
+        AND r.verification IS NOT NULL
+        AND json_extract(r.verification,'$.status') = 'resolved'
+      ORDER BY e.created_at DESC
+      LIMIT 5
+    `).all(eventType, source).map(row => ({
+      ...row,
+      decision:     safeJSON(row.decision),
+      verification: safeJSON(row.verification)
+    }));
+
+    return rows;
+  }
+};
+
+function getSuggestion(row) {
+  if (row.count >= 5)  return `Alert storm — consider auto-escalating ${row.source}`;
+  if (row.severity === 'critical') return `Recurring critical issue — review ${row.source} infrastructure`;
+  if (row.type === 'error')        return `Repeated errors from ${row.source} — check deployment or config`;
+  return `Monitor ${row.source} closely — ${row.count} occurrences in ${24}h`;
+}

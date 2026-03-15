@@ -9,7 +9,7 @@ import { findCorrelatedEvents, recordEvent, getProjectPatterns } from '../correl
 import { applyPolicies, requiresApproval } from '../policies/policyEngine.js';
 import { createApprovalRequest, waitForApproval } from '../approvals/approvalManager.js';
 import { getProject, getProjectHealth } from '../registry/projects.js';
-import { resultsDB } from '../db/database.js';
+import { resultsDB, analyticsDB } from '../db/database.js';
 
 export default async function handleOperationalEvent(input, context) {
   const { eventId, data } = input;
@@ -43,9 +43,20 @@ export default async function handleOperationalEvent(input, context) {
     console.log('\n--- STEP 1: Ingest ---');
     const step1 = await context.step('ingestEvent', () => ingestEvent({ eventId, data }, context));
 
+    // STEP 1.5: Runbook lookup — check how similar past events were resolved
+    let runbookHint = '';
+    try {
+      const past = analyticsDB.getRunbook(data.type, data.source, data.metadata?.project);
+      if (past.length > 0) {
+        const last = past[0];
+        runbookHint = `Similar past incident resolved by: ${last.decision?.action}. ${last.summary || ''}`;
+        console.log(`\n📖 Runbook: ${runbookHint.slice(0, 120)}`);
+      }
+    } catch(e) { /* non-fatal */ }
+
     // STEP 2: AI Classification
     console.log('\n--- STEP 2: AI Classification ---');
-    const step2 = await context.step('classifyEvent', () => classifyEvent(step1, context));
+    const step2 = await context.step('classifyEvent', () => classifyEvent({ ...step1, runbookHint }, context));
 
     // STEP 3: AI Decision
     console.log('\n--- STEP 3: AI Decision ---');

@@ -5,12 +5,12 @@ import { classifyEvent as aiClassify } from '../agents/decisionAgent.js';
  * Determines severity, category, and confidence
  */
 export async function classifyEvent(previousStepOutput, context) {
-  const { eventData } = previousStepOutput;
+  const { eventData, runbookHint } = previousStepOutput;
   
   console.log(`🤖 Classifying event: ${eventData.type}`);
   
   // Call AI agent for classification
-  const classification = await aiClassify(eventData);
+  const classification = await aiClassify(eventData, runbookHint);
   
   console.log(`✅ Classification complete: ${classification.severity} severity`);
   console.log(`   Category: ${classification.category}`);

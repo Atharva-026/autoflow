@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import http from 'http';
-import { eventsDB, logsDB } from './db/database.js';
+import { eventsDB, logsDB, analyticsDB } from './db/database.js';
 import handleOperationalEvent from './workflows/handleEvent.js';
 import { getAllProjects, getProject, createProject, updateProject, deleteProject, getProjectHealth } from './registry/projects.js';
 import { getCorrelationStats } from './correlation/eventCorrelator.js';
@@ -262,7 +262,52 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  json(res, { error: 'Not found' }, 404);
+  // GET /api/analytics/metrics — overall system metrics
+  if (req.url === '/api/analytics/metrics' && req.method === 'GET') {
+    json(res, { success: true, metrics: analyticsDB.getMetrics() });
+    return;
+  }
+
+  // GET /api/analytics/history — incident history with filters
+  if (req.url.startsWith('/api/analytics/history') && req.method === 'GET') {
+    const url      = new URL(req.url, 'http://localhost');
+    const project  = url.searchParams.get('project')  || undefined;
+    const severity = url.searchParams.get('severity') || undefined;
+    const status   = url.searchParams.get('status')   || undefined;
+    const search   = url.searchParams.get('search')   || undefined;
+    const limit    = parseInt(url.searchParams.get('limit')  || '50');
+    const offset   = parseInt(url.searchParams.get('offset') || '0');
+    json(res, { success: true, ...analyticsDB.getHistory({ project, severity, status, search, limit, offset }) });
+    return;
+  }
+
+  // GET /api/analytics/patterns — recurring issue detection
+  if (req.url.startsWith('/api/analytics/patterns') && req.method === 'GET') {
+    const url     = new URL(req.url, 'http://localhost');
+    const project = url.searchParams.get('project') || undefined;
+    const hours   = parseInt(url.searchParams.get('hours') || '24');
+    json(res, { success: true, patterns: analyticsDB.getPatterns(project, hours) });
+    return;
+  }
+
+  // GET /api/analytics/project/:id — per-project metrics
+  if (req.url.match(/^\/api\/analytics\/project\/[^\/]+$/) && req.method === 'GET') {
+    const projectId = req.url.split('/')[4];
+    json(res, { success: true, ...analyticsDB.getProjectMetrics(projectId) });
+    return;
+  }
+
+  // GET /api/analytics/runbook — past resolutions for similar events
+  if (req.url.startsWith('/api/analytics/runbook') && req.method === 'GET') {
+    const url    = new URL(req.url, 'http://localhost');
+    const type   = url.searchParams.get('type')   || '';
+    const source = url.searchParams.get('source') || '';
+    const project= url.searchParams.get('project')|| '';
+    json(res, { success: true, runbook: analyticsDB.getRunbook(type, source, project) });
+    return;
+  }
+
+    json(res, { error: 'Not found' }, 404);
 });
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
