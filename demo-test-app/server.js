@@ -1,197 +1,132 @@
 /**
- * DEMO TEST APP
- * Simple Express app that deliberately throws errors
- * Used to demonstrate AutoFlow integration
+ * AutoFlow Demo App
+ * Shows the SDK in action — ES module version
  */
 
 import express from 'express';
-import AutoFlowClient from '../autoflow-sdk/index.js';
+import AutoFlow from '../autoflow-sdk/index.js';
 
-// Initialize AutoFlow
-const autoflow = new AutoFlowClient({
-  endpoint: 'http://localhost:3000/api/event',
-  project: 'demo-test-app',
-  environment: 'production'
+// ─── Initialize SDK ────────────────────────────────────────────────────────
+
+const af = new AutoFlow({
+  endpoint:    'http://localhost:3000/api/event',
+  project:     'demo-test-app',
+  environment: 'production',
+  debug:       true,          // log SDK activity
+  maxRetries:  2              // retry twice on failure
 });
 
-// Capture global errors
-autoflow.captureUncaughtExceptions();
+// Install global handlers
+af.captureUncaughtExceptions();
 
 const app = express();
 app.use(express.json());
 
-console.log('\n🎯 Demo Test App Started!');
-console.log('📊 AutoFlow Integration: ENABLED');
-console.log('🔗 AutoFlow Backend: http://localhost:3000');
-console.log('📈 AutoFlow Dashboard: http://localhost:3001\n');
+// ─── Routes ────────────────────────────────────────────────────────────────
 
-// Home route
 app.get('/', (req, res) => {
   res.json({
-    message: 'Demo Test App - Integrated with AutoFlow',
-    routes: {
-      '/': 'This page',
-      '/test/low': 'Trigger low severity error',
-      '/test/medium': 'Trigger medium severity error',
-      '/test/high': 'Trigger high severity error',
-      '/test/critical': 'Trigger CRITICAL error (requires approval)',
-      '/test/storm': 'Trigger alert storm (3 duplicate errors)',
-      '/test/success': 'Successful operation (no error)'
-    },
-    instructions: [
-      '1. Visit any /test/* route to trigger events',
-      '2. Check AutoFlow dashboard at http://localhost:3001',
-      '3. Watch real-time logs and AI decisions'
-    ]
+    message: 'AutoFlow Demo App',
+    sdk:     'autoflow-sdk v1.0.0',
+    routes:  {
+      '/health':        'Check AutoFlow backend connectivity',
+      '/test/low':      'Low severity (→ ignored)',
+      '/test/medium':   'Medium severity (→ monitored)',
+      '/test/high':     'High severity (→ auto-fix)',
+      '/test/critical': 'Critical severity (→ requires approval)',
+      '/test/storm':    'Alert storm — 3 duplicates fast',
+      '/test/batch':    'Batched events demo',
+      '/test/success':  'Success event (info level)'
+    }
   });
 });
 
-// Test route: Low severity
+// Health check — shows SDK health() method
+app.get('/health', async (req, res) => {
+  const result = await af.health();
+  res.json({ autoflow: result });
+});
+
+// Low severity
 app.get('/test/low', async (req, res) => {
-  const error = new Error('User uploaded invalid file format');
-  error.name = 'ValidationError';
-  
-  await autoflow.reportError(error, {
-    source: 'file-upload',
-    userId: 'demo-user-123',
-    fileName: 'document.xyz'
-  });
-  
-  res.json({
-    status: 'Error reported to AutoFlow',
-    severity: 'low',
-    expectedAction: 'ignore (log only)',
-    message: 'Check AutoFlow dashboard!'
-  });
+  const error = new Error('User uploaded unsupported file format');
+  error.name  = 'ValidationError';
+  await af.reportError(error, { source: 'file-upload', userId: 'user-123' });
+  res.json({ status: 'reported', expectedAction: 'ignore' });
 });
 
-// Test route: Medium severity
+// Medium severity
 app.get('/test/medium', async (req, res) => {
-  const error = new Error('API rate limit exceeded for user');
-  error.name = 'RateLimitError';
-  
-  await autoflow.reportError(error, {
-    source: 'api-gateway',
-    userId: 'demo-user-456',
-    currentRate: 1050,
-    limit: 1000
-  });
-  
-  res.json({
-    status: 'Error reported to AutoFlow',
-    severity: 'medium',
-    expectedAction: 'monitor',
-    message: 'Check AutoFlow dashboard!'
-  });
+  const error = new Error('API rate limit exceeded');
+  error.name  = 'RateLimitError';
+  await af.reportError(error, { source: 'api-gateway', currentRate: 1050, limit: 1000 });
+  res.json({ status: 'reported', expectedAction: 'monitor' });
 });
 
-// Test route: High severity
+// High severity
 app.get('/test/high', async (req, res) => {
   const error = new Error('Database connection timeout after 3 retries');
-  error.name = 'DatabaseError';
-  error.code = 'ETIMEDOUT';
-  
-  await autoflow.reportError(error, {
-    source: 'database-pool',
-    database: 'production-db',
-    retries: 3,
-    lastAttempt: new Date().toISOString()
-  });
-  
-  res.json({
-    status: 'Error reported to AutoFlow',
-    severity: 'high',
-    expectedAction: 'auto-fix (restart connection pool)',
-    message: 'Check AutoFlow dashboard and terminal logs!'
-  });
+  error.name  = 'DatabaseError';
+  error.code  = 'ETIMEDOUT';
+  await af.reportError(error, { source: 'database-pool', retries: 3 });
+  res.json({ status: 'reported', expectedAction: 'auto-fix' });
 });
 
-// Test route: CRITICAL severity (requires approval!)
+// Critical severity — triggers approval banner
 app.get('/test/critical', async (req, res) => {
-  const error = new Error('Payment gateway completely unresponsive - all transactions failing');
-  error.name = 'PaymentError';
-  
-  await autoflow.reportError(error, {
-    source: 'payment-gateway',
+  const error = new Error('Payment gateway completely unresponsive');
+  error.name  = 'PaymentError';
+  await af.reportError(error, {
+    source:   'payment-gateway',
     severity: 'critical',
-    affectedTransactions: 127,
-    lastSuccessfulTransaction: '10 minutes ago',
-    gatewayStatus: 'unreachable'
+    affectedTransactions: 127
   });
-  
-  res.json({
-    status: 'CRITICAL Error reported to AutoFlow',
-    severity: 'critical',
-    expectedAction: 'REQUEST APPROVAL (check dashboard!)',
-    message: '⚠️ APPROVAL BANNER should appear in AutoFlow dashboard!',
-    instructions: 'Click Approve or Reject button in the dashboard'
-  });
+  res.json({ status: 'reported', expectedAction: 'require_approval — check dashboard!' });
 });
 
-// Test route: Alert storm (duplicate errors)
+// Alert storm — 3 identical errors fast
 app.get('/test/storm', async (req, res) => {
   const error = new Error('Redis connection lost');
-  
-  // Send same error 3 times quickly
   for (let i = 0; i < 3; i++) {
-    await autoflow.reportError(error, {
-      source: 'cache-service',
-      attemptNumber: i + 1
-    });
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await af.reportError(error, { source: 'cache-service', attempt: i + 1 });
+    await new Promise(r => setTimeout(r, 100));
   }
-  
-  res.json({
-    status: '3 duplicate errors sent',
-    expectedBehavior: 'AutoFlow detects alert storm',
-    expectedAction: 'Auto-escalate (prevent spam)',
-    message: 'Check terminal - should show "ALERT STORM DETECTED"'
-  });
+  res.json({ status: '3 duplicate errors sent', expectedAction: 'storm detection' });
 });
 
-// Test route: Successful operation
+// Batching demo — queue 5 events, flush once
+app.get('/test/batch', async (req, res) => {
+  const batchClient = new AutoFlow({
+    endpoint:      'http://localhost:3000/api/event',
+    project:       'demo-test-app',
+    environment:   'production',
+    batchInterval: 60000  // long interval so we can flush manually
+  });
+
+  for (let i = 1; i <= 5; i++) {
+    await batchClient.reportEvent('info', `Batch event ${i} of 5`, 'low', { batchDemo: true });
+  }
+
+  // Flush all 5 at once
+  await batchClient.flush();
+  res.json({ status: '5 events batched and flushed in 1 operation' });
+});
+
+// Success / info event
 app.get('/test/success', async (req, res) => {
-  await autoflow.reportEvent('info', 'User successfully completed checkout', 'low', {
-    userId: 'demo-user-789',
-    orderId: 'ORD-12345',
-    amount: 99.99
+  await af.reportEvent('info', 'User checkout completed successfully', 'low', {
+    userId: 'user-789', orderId: 'ORD-12345', amount: 99.99
   });
-  
-  res.json({
-    status: 'Success event reported',
-    message: 'This shows AutoFlow can track successes too!'
-  });
+  res.json({ status: 'success event reported' });
 });
 
-// Test route: Unhandled error
-app.get('/test/unhandled', (req, res) => {
-  throw new Error('Unhandled exception in route handler');
-});
+// Global error handler using SDK middleware
+app.use(af.middleware());
 
-// Simulate background job with errors
-setInterval(async () => {
-  try {
-    if (Math.random() < 0.1) {
-      throw new Error('Background cleanup job failed');
-    }
-  } catch (error) {
-    await autoflow.reportError(error, {
-      source: 'cleanup-job',
-      jobType: 'background',
-      severity: 'medium'
-    });
-  }
-}, 30000);
+// ─── Start ─────────────────────────────────────────────────────────────────
 
-// Global error middleware
-app.use(autoflow.expressMiddleware());
-
-// Start server
 const PORT = 4000;
 app.listen(PORT, () => {
-  console.log(`\n✅ Demo Test App running on http://localhost:${PORT}`);
-  console.log(`\n📖 Quick Test:`);
-  console.log(`   Visit http://localhost:${PORT}/test/critical`);
-  console.log(`   Then check http://localhost:3001 for approval banner!\n`);
-  console.log(`💡 TIP: Try each /test/* route to see different AutoFlow behaviors\n`);
+  console.log(`\n✅ Demo app running on http://localhost:${PORT}`);
+  console.log(`📊 AutoFlow dashboard: http://localhost:3001\n`);
 });
