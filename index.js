@@ -117,10 +117,65 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /api/projects/:id/health — rich health status for CI/status pages
   if (req.url.startsWith('/api/projects/') && req.url.includes('/health')) {
     const projectId = req.url.split('/')[3];
-    const allEvents = eventsDB.getAll({ project: projectId, limit: 100 });
-    json(res, { success: true, health: getProjectHealth(projectId, allEvents) });
+    const health    = getProjectHealth(projectId);
+
+    if (!health) { json(res, { error: 'Project not found' }, 404); return; }
+
+    // Support ?format=simple for lightweight CI checks
+    const url    = new URL(req.url, 'http://localhost');
+    const simple = url.searchParams.get('format') === 'simple';
+
+    if (simple) {
+      // Minimal response for CI pipelines / uptime monitors
+      json(res, {
+        project:  health.project,
+        name:     health.name,
+        health:   health.health,
+        reason:   health.healthReason,
+        ok:       health.health === 'healthy' || health.health === 'warning',
+        checkedAt: health.checkedAt
+      }, health.health === 'critical' ? 503 : 200);
+      return;
+    }
+
+    json(res, { success: true, health }, health.health === 'critical' ? 503 : 200);
+    return;
+  }
+
+  // GET /api/health/all — health summary for ALL projects
+  if (req.url === '/api/health/all' && req.method === 'GET') {
+    const projects = getAllProjects();
+    const summary  = projects.map(p => {
+      const h = getProjectHealth(p.id);
+      return {
+        project:     p.id,
+        name:        p.name,
+        health:      h?.health        || 'unknown',
+        reason:      h?.healthReason  || '',
+        openIncidents: h?.openIncidents?.total || 0,
+        last24h:     h?.activity?.last24h || 0,
+        criticality: p.criticality
+      };
+    });
+
+    const counts = { healthy: 0, warning: 0, degraded: 0, critical: 0, unknown: 0 };
+    summary.forEach(p => { counts[p.health] = (counts[p.health] || 0) + 1; });
+
+    const overallHealth = counts.critical > 0 ? 'critical'
+      : counts.degraded > 0 ? 'degraded'
+      : counts.warning  > 0 ? 'warning'
+      : 'healthy';
+
+    json(res, {
+      success:  true,
+      overall:  overallHealth,
+      counts,
+      projects: summary,
+      checkedAt: new Date().toISOString()
+    }, counts.critical > 0 ? 503 : 200);
     return;
   }
 

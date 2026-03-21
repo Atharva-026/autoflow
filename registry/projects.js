@@ -57,25 +57,83 @@ export function getProjectHealth(projectId, recentEvents = []) {
   const project = getProject(projectId);
   if (!project) return null;
 
-  // If no events passed in, load from DB
+  // Load from DB if not passed in
   const events = recentEvents.length > 0
     ? recentEvents.filter(e => (e.metadata?.project || e.project) === projectId)
     : eventsDB.getAll({ project: projectId, limit: 100 });
 
-  const criticalCount = events.filter(e => e.severity === 'critical' && e.status !== 'completed').length;
-  const highCount     = events.filter(e => e.severity === 'high'     && e.status !== 'completed').length;
-  const failedCount   = events.filter(e => e.status === 'failed').length;
+  const now = Date.now();
+  const last24h = events.filter(e => (now - new Date(e.created_at).getTime()) < 86400000);
+  const last1h  = events.filter(e => (now - new Date(e.created_at).getTime()) < 3600000);
 
+  // Open incidents (not yet completed)
+  const openCritical = events.filter(e => e.severity === 'critical' && e.status !== 'completed').length;
+  const openHigh     = events.filter(e => e.severity === 'high'     && e.status !== 'completed').length;
+  const failedCount  = events.filter(e => e.status === 'failed').length;
+
+  // Resolution rate
+  const completed   = events.filter(e => e.status === 'completed').length;
+  const total       = events.length;
+  const resolveRate = total > 0 ? Math.round((completed / total) * 100) : 100;
+
+  // Health status
   let health = 'healthy';
-  if (criticalCount > 0 || failedCount > 2) health = 'critical';
-  else if (highCount > 2)                    health = 'degraded';
-  else if (highCount > 0)                    health = 'warning';
+  let healthReason = 'No active incidents';
+  if (openCritical > 0 || failedCount > 2) {
+    health = 'critical';
+    healthReason = openCritical > 0
+      ? `${openCritical} unresolved critical incident${openCritical > 1 ? 's' : ''}`
+      : `${failedCount} failed workflows`;
+  } else if (openHigh > 2) {
+    health = 'degraded';
+    healthReason = `${openHigh} unresolved high-severity incidents`;
+  } else if (openHigh > 0) {
+    health = 'warning';
+    healthReason = `${openHigh} high-severity incident${openHigh > 1 ? 's' : ''} under review`;
+  }
+
+  // Most recent incident
+  const lastIncident = events.length > 0 ? events[0] : null;
 
   return {
-    project: projectId,
-    name:    project.name,
-    health,
-    stats:   { total: events.length, critical: criticalCount, high: highCount, failed: failedCount },
-    recentEvents: events.slice(0, 5)
+    // Core fields — for embedding in status pages / CI pipelines
+    project:      projectId,
+    name:         project.name,
+    health,                           // healthy | warning | degraded | critical
+    healthReason,
+    owner:        project.owner,
+    criticality:  project.criticality,
+    environment:  project.environment,
+    checkedAt:    new Date().toISOString(),
+
+    // Incident counts
+    openIncidents: {
+      critical: openCritical,
+      high:     openHigh,
+      total:    openCritical + openHigh
+    },
+
+    // Activity windows
+    activity: {
+      last1h:  last1h.length,
+      last24h: last24h.length,
+      total:   total
+    },
+
+    // Performance
+    resolutionRate: resolveRate,
+    failedWorkflows: failedCount,
+
+    // Last incident summary
+    lastIncident: lastIncident ? {
+      id:        lastIncident.id,
+      message:   lastIncident.message,
+      severity:  lastIncident.severity,
+      status:    lastIncident.status,
+      timestamp: lastIncident.created_at
+    } : null,
+
+    // Contact info
+    contacts: project.contacts || {}
   };
-}
+  }
